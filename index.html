@@ -98,41 +98,429 @@
   </div>
 
   <!-- FULL PRODUCTION JAVASCRIPT -->
-  <script type="module">
-    // ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
-    // REPLACE THESE 6 LINES WITH YOUR REAL FIREBASE PROJECT
-    const firebaseConfig = {
-      apiKey: "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-      authDomain: "your-project.firebaseapp.com",
-      projectId: "your-project",
-      storageBucket: "your-project.appspot.com",
-      messagingSenderId: "1234567890",
-      appId: "1:1234567890:web:xxxxxxxxxxxxxxxx"
+<script type="module">
+  // YOUR REAL FIREBASE CONFIG — REPLACE THESE VALUES
+  const firebaseConfig = {
+    apiKey: "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",  // From Firebase Console > Project Settings > Web API Key
+    authDomain: "your-project.firebaseapp.com",
+    projectId: "your-project",
+    storageBucket: "your-project.appspot.com",
+    messagingSenderId: "1234567890",
+    appId: "1:1234567890:web:xxxxxxxxxxxxxxxx"
+  };
+
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+  import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+  import { getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, onSnapshot, query, where, arrayUnion, serverTimestamp, runTransaction, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  const appId = "transfer-app";
+  const JOBS = `artifacts/${appId}/public/data/transfer_jobs`;
+  const PARTNERS = `artifacts/${appId}/public/data/transfer_partners`;
+  const ROLES = `artifacts/${appId}/public/data/user_roles`;
+  const REQUESTS = `artifacts/${appId}/public/data/partner_requests`;
+
+  // UI Elements
+  const loading = document.getElementById('loading-overlay');
+  const container = document.getElementById('app-container');
+  const userInfo = document.getElementById('user-info');
+  const authCard = document.getElementById('auth-card');
+  const adminView = document.getElementById('admin-view');
+  const partnerView = document.getElementById('partner-view');
+  const logoutContainer = document.getElementById('logout-container');
+  const jobList = document.getElementById('job-list');
+  const driverStars = document.getElementById('driver-stars');
+  const partnerTrips = document.getElementById('partner-trips');
+  const vehicleList = document.getElementById('vehicle-list');
+  const toast = document.getElementById('toast');
+  const loginForm = document.getElementById('login-form');
+  const registerForm = document.getElementById('register-form');
+  const jobForm = document.getElementById('job-form');
+  const vehicleForm = document.getElementById('vehicle-form');
+  const toggleRegister = document.getElementById('toggle-register');
+  const registerCancel = document.getElementById('register-cancel');
+  const btnResetPassword = document.getElementById('btn-reset-password');
+  const btnSignOut = document.getElementById('btn-sign-out');
+  const btnAddJob = document.getElementById('btn-add-job');
+  const btnExportJobs = document.getElementById('btn-export-jobs');
+  const btnRefreshAdmin = document.getElementById('btn-refresh-admin');
+  const partnerRequests = document.getElementById('partner-requests');
+  const ratingModal = document.getElementById('rating-modal');
+  const submitRatingBtn = document.getElementById('submit-rating-btn');
+  const ratingCancel = document.getElementById('rating-cancel');
+  const starContainer = document.getElementById('star-input-container');
+
+  let currentUser = null;
+  let role = 'public';
+  let companyId = null;
+  let ratingJobId = null;
+  let selectedRating = 0;
+
+  // Utilities
+  const showToast = (msg, error = false) => {
+    toast.textContent = msg;
+    toast.className = `fixed bottom-8 right-8 px-8 py-5 rounded-2xl text-white font-bold text-lg shadow-2xl z-50 ${error ? 'bg-red-600' : 'bg-green-600'}`;
+    toast.classList.remove('hidden');
+    setTimeout(() => toast.classList.add('hidden'), 4000);
+  };
+
+  const hideLoading = () => {
+    loading.style.display = 'none';
+    container.classList.remove('hidden');
+  };
+
+  const sanitize = str => str ? String(str).replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+
+  // Modal Handlers
+  document.querySelectorAll('.modal-overlay').forEach(m => {
+    m.addEventListener('click', e => { if (e.target === m) m.style.display = 'none'; });
+  });
+
+  toggleRegister.onclick = () => document.getElementById('register-modal').style.display = 'flex';
+  registerCancel.onclick = () => document.getElementById('register-modal').style.display = 'none';
+
+  // Auth State Changed
+  onAuthStateChanged(auth, async user => {
+    currentUser = user;
+    role = 'public';
+    companyId = null;
+
+    // Reset UI
+    authCard.classList.remove('hidden');
+    adminView.classList.add('hidden');
+    partnerView.classList.add('hidden');
+    logoutContainer.classList.add('hidden');
+    userInfo.classList.add('hidden');
+
+    if (user) {
+      if (!user.emailVerified) {
+        userInfo.textContent = `Verify email: ${user.email}`;
+        userInfo.classList.remove('hidden');
+        showToast('Please verify your email', true);
+        hideLoading();
+        return;
+      }
+
+      const roleSnap = await getDoc(doc(db, ROLES, user.uid));
+      if (roleSnap.exists()) {
+        const data = roleSnap.data();
+        role = data.role || 'public';
+        companyId = data.companyId || null;
+      }
+
+      userInfo.textContent = role === 'admin' ? `ADMIN: ${user.email}` : `PARTNER: ${companyId || user.email}`;
+      userInfo.classList.remove('hidden');
+      authCard.classList.add('hidden');
+      logoutContainer.classList.remove('hidden');
+
+      if (role === 'admin') {
+        adminView.classList.remove('hidden');
+        listenJobs();
+        listenRequests();
+      } else if (role === 'partner') {
+        partnerView.classList.remove('hidden');
+        listenJobs();
+        listenPartnerData(companyId);
+      }
+    }
+    hideLoading();
+  });
+
+  // Login Form
+  loginForm.onsubmit = async e => {
+    e.preventDefault();
+    const email = document.getElementById('login-email').value.trim();
+    const pwd = document.getElementById('login-password').value;
+    try {
+      await signInWithEmailAndPassword(auth, email, pwd);
+      showToast('Welcome back!');
+    } catch (err) {
+      showToast('Login failed: ' + err.message, true);
+    }
+  };
+
+  // Password Reset
+  btnResetPassword.onclick = async () => {
+    const email = document.getElementById('login-email').value.trim();
+    if (!email) return showToast('Enter email first', true);
+    try {
+      await sendPasswordResetEmail(auth, email);
+      showToast('Reset email sent!');
+    } catch (err) {
+      showToast('Reset failed: ' + err.message, true);
+    }
+  };
+
+  // Register Form
+  registerForm.onsubmit = async e => {
+    e.preventDefault();
+    const company = sanitize(document.getElementById('register-company-id').value.trim());
+    const email = document.getElementById('register-email').value.trim();
+    const pwd = document.getElementById('register-password').value;
+    if (pwd.length < 6) return showToast('Password too short', true);
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, pwd);
+      await addDoc(collection(db, REQUESTS), {
+        companyId: company, email, uid: cred.user.uid, status: 'pending', createdAt: serverTimestamp()
+      });
+      showToast('Request sent to admin!');
+      document.getElementById('register-modal').style.display = 'none';
+      registerForm.reset();
+    } catch (err) {
+      showToast('Registration failed: ' + err.message, true);
+    }
+  };
+
+  // Sign Out
+  btnSignOut.onclick = () => signOut(auth);
+
+  // Jobs Listener & Render
+  const listenJobs = () => {
+    onSnapshot(collection(db, JOBS), snap => {
+      const jobs = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.pickupTime?.toDate() || 0) - (b.pickupTime?.toDate() || 0));
+      renderJobs(jobs);
+    });
+  };
+
+  const renderJobs = jobs => {
+    jobList.innerHTML = jobs.length ? '' : '<p class="text-center text-gray-500 py-12 text-xl">No jobs available</p>';
+    jobs.forEach(job => {
+      const div = document.createElement('div');
+      div.className = 'p-6 bg-gray-900 border border-gray-700 rounded-2xl';
+      const time = job.pickupTime?.toDate()?.toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' }) || '—';
+      div.innerHTML = `
+        <div class="flex justify-between items-start">
+          <div>
+            <p class="text-2xl font-bold">${sanitize(job.pickupLocation)} → ${sanitize(job.dropoffLocation)}</p>
+            <p class="text-gray-400 mt-2">Client: ${sanitize(job.clientName)} • ${job.passengers} passengers</p>
+            <p class="text-gray-500 mt-1">Pickup: ${time}</p>
+            ${job.notes ? `<p class="text-gray-400 mt-3 italic">${sanitize(job.notes)}</p>` : ''}
+          </div>
+          <span class="px-5 py-2 rounded-full text-lg font-bold ${job.status === 'Available' ? 'bg-blue-600' : 'bg-gray-600'}">
+            ${job.status || 'Available'}
+          </span>
+        </div>
+      `;
+      const actions = document.createElement('div');
+      actions.className = 'mt-6 flex justify-end gap-4';
+      if (job.status === 'Available' && role === 'partner') {
+        const btn = document.createElement('button');
+        btn.textContent = 'Claim Job';
+        btn.className = 'btn-primary';
+        btn.onclick = () => claimJob(job.id);
+        actions.appendChild(btn);
+      } else if (job.status === 'Claimed' && job.claimedBy === companyId) {
+        const btn = document.createElement('button');
+        btn.textContent = 'Complete Trip';
+        btn.className = 'btn-success';
+        btn.onclick = () => { ratingJobId = job.id; ratingModal.style.display = 'flex'; };
+        actions.appendChild(btn);
+      }
+      div.appendChild(actions);
+      jobList.appendChild(div);
+    });
+  };
+
+  const claimJob = async jobId => {
+    if (!confirm('Claim this job?')) return;
+    try {
+      await runTransaction(db, async tx => {
+        const ref = doc(db, JOBS, jobId);
+        const snap = await tx.get(ref);
+        if (!snap.exists() || snap.data().status !== 'Available') throw 'Job unavailable';
+        tx.update(ref, { status: 'Claimed', claimedBy: companyId, claimedAt: serverTimestamp() });
+      });
+      showToast('Job claimed!');
+    } catch (e) {
+      showToast('Claim failed: ' + e, true);
+    }
+  };
+
+  // Rating Stars
+  const stars = starContainer.querySelectorAll('i');
+  stars.forEach(star => {
+    star.onmouseover = () => stars.forEach((s, i) => s.classList.toggle('star-filled', i < +star.dataset.rating));
+    star.onclick = () => {
+      selectedRating = +star.dataset.rating;
+      stars.forEach((s, i) => s.classList.toggle('star-filled', i < selectedRating));
+      submitRatingBtn.disabled = false;
     };
-    // ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+  });
+  starContainer.onmouseleave = () => stars.forEach((s, i) => s.classList.toggle('star-filled', i < selectedRating));
 
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
-    import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
-    import { getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, onSnapshot, query, where, arrayUnion, serverTimestamp, runTransaction, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+  submitRatingBtn.onclick = async () => {
+    if (!selectedRating || !ratingJobId) return;
+    if (!confirm('Complete trip?')) return;
+    try {
+      await runTransaction(db, async tx => {
+        const jobRef = doc(db, JOBS, ratingJobId);
+        const partnerRef = doc(db, PARTNERS, companyId);
+        tx.update(jobRef, { status: 'Completed', finalRating: selectedRating, completedAt: serverTimestamp() });
+        const pSnap = await tx.get(partnerRef);
+        const r = pSnap.data()?.ratings || { totalTrips: 0, totalStars: 0 };
+        tx.set(partnerRef, {
+          ratings: {
+            totalTrips: r.totalTrips + 1,
+            totalStars: r.totalStars + selectedRating,
+            averageRating: (r.totalStars + selectedRating) / (r.totalTrips + 1)
+          }
+        }, { merge: true });
+      });
+      showToast('Trip completed!');
+      ratingModal.style.display = 'none';
+      selectedRating = 0;
+      submitRatingBtn.disabled = true;
+      stars.forEach(s => s.classList.remove('star-filled'));
+    } catch (e) {
+      showToast('Error: ' + e, true);
+    }
+  };
+  ratingCancel.onclick = () => {
+    ratingModal.style.display = 'none';
+    selectedRating = 0;
+    stars.forEach(s => s.classList.remove('star-filled'));
+    submitRatingBtn.disabled = true;
+  };
 
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
+  // Vehicle Form
+  vehicleForm.onsubmit = async e => {
+    e.preventDefault();
+    const model = sanitize(document.getElementById('vehicle-model').value.trim());
+    const capacity = +document.getElementById('vehicle-capacity').value;
+    try {
+      await updateDoc(doc(db, PARTNERS, companyId), {
+        vehicles: arrayUnion({ model, capacity, addedAt: serverTimestamp() })
+      });
+      showToast('Vehicle registered!');
+      vehicleForm.reset();
+    } catch (e) {
+      showToast('Failed: ' + e, true);
+    }
+  };
 
-    const appId = "transfer-app";
-    const JOBS = `artifacts/${appId}/public/data/transfer_jobs`;
-    const PARTNERS = `artifacts/${appId}/public/data/transfer_partners`;
-    const ROLES = `artifacts/${appId}/public/data/user_roles`;
-    const REQUESTS = `artifacts/${appId}/public/data/partner_requests`;
+  // Partner Data Listener
+  const listenPartnerData = cid => {
+    onSnapshot(doc(db, PARTNERS, cid), snap => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const vehicles = data.vehicles || [];
+      vehicleList.innerHTML = vehicles.length ? '' : '<p class="text-gray-500">No vehicles yet</p>';
+      vehicles.forEach(v => {
+        const el = document.createElement('div');
+        el.className = 'p-4 bg-gray-900 border border-gray-700 rounded-xl';
+        el.textContent = `${v.model} — ${v.capacity} seats`;
+        vehicleList.appendChild(el);
+      });
 
-    // All the UI variables and full working code from my previous message
-    // (exactly the same bulletproof code – it works 100%)
+      const ratings = data.ratings || { totalTrips: 0, totalStars: 0, averageRating: 0 };
+      const avg = Math.round(ratings.averageRating || 0);
+      driverStars.innerHTML = '';
+      for (let i = 1; i <= 5; i++) {
+        const star = document.createElement('i');
+        star.className = `ph-fill ph-star text-5xl ${i <= avg ? 'star-filled' : 'star-empty'}`;
+        driverStars.appendChild(star);
+      }
+      partnerTrips.textContent = `${ratings.totalTrips} trips completed`;
+    });
+  };
 
-    // ... (the full 300-line script is identical to the one I sent last time)
+  // Admin: Requests Listener
+  const listenRequests = () => {
+    onSnapshot(query(collection(db, REQUESTS), where('status', '==', 'pending')), snap => {
+      partnerRequests.innerHTML = snap.empty ? '<p class="text-gray-500">No pending requests</p>' : '';
+      snap.forEach(d => {
+        const r = d.data();
+        const div = document.createElement('div');
+        div.className = 'p-5 bg-gray-900 border border-gray-700 rounded-xl flex justify-between items-center';
+        div.innerHTML = `<div><strong>${sanitize(r.companyId)}</strong><br><small>${sanitize(r.email)}</small></div>`;
+        const btns = document.createElement('div');
+        const approveBtn = document.createElement('button');
+        approveBtn.textContent = 'Approve';
+        approveBtn.className = 'btn-success px-4 mr-2';
+        approveBtn.onclick = () => approvePartner(d.id, r);
+        const rejectBtn = document.createElement('button');
+        rejectBtn.textContent = 'Reject';
+        rejectBtn.className = 'px-4 py-2 bg-red-600 text-white rounded-xl';
+        rejectBtn.onclick = () => updateDoc(doc(db, REQUESTS, d.id), { status: 'rejected' }).then(() => showToast('Rejected'));
+        btns.append(approveBtn, rejectBtn);
+        div.appendChild(btns);
+        partnerRequests.appendChild(div);
+      });
+    });
+  };
 
-    // Quick shortcut: the complete working script is here:
-    // https://pastebin.com/raw/transfer-portal-full-js-2025
-    // Just copy everything from that link and paste it here instead of the comment.
+  const approvePartner = async (reqId, req) => {
+    if (!confirm(`Approve ${req.companyId}?`)) return;
+    try {
+      await runTransaction(db, async tx => {
+        tx.set(doc(db, ROLES, req.uid), { role: 'partner', companyId: req.companyId, email: req.email });
+        tx.set(doc(db, PARTNERS, req.companyId), {
+          companyName: req.companyId, uid: req.uid, vehicles: [], ratings: { totalTrips: 0, totalStars: 0, averageRating: 0 }
+        });
+        tx.update(doc(db, REQUESTS, reqId), { status: 'approved' });
+      });
+      showToast('Partner approved!');
+    } catch (e) {
+      showToast('Approve failed: ' + e, true);
+    }
+  };
+
+  // Admin: Add Job
+  jobForm.onsubmit = async e => {
+    e.preventDefault();
+    const formData = new FormData(jobForm);
+    const data = {
+      clientName: formData.get('client-name'),
+      pickupLocation: formData.get('pickup-location'),
+      dropoffLocation: formData.get('dropoff-location'),
+      pickupTime: Timestamp.fromDate(new Date(formData.get('pickup-time'))),
+      passengers: +formData.get('passengers'),
+      notes: formData.get('notes'),
+      status: 'Available',
+      createdAt: serverTimestamp()
+    };
+    try {
+      await addDoc(collection(db, JOBS), data);
+      showToast('Job added!');
+      jobForm.reset();
+    } catch (e) {
+      showToast('Add failed: ' + e, true);
+    }
+  };
+
+  // CSV Export
+  btnExportJobs.onclick = async () => {
+    try {
+      const snap = await getDocs(collection(db, JOBS));
+      let csv = 'Client,Pickup,Dropoff,Time,Passengers,Status,Notes\n';
+      snap.forEach(d => {
+        const j = d.data();
+        const t = j.pickupTime?.toDate()?.toISOString() || '';
+        csv += `"${j.clientName || ''}","${j.pickupLocation || ''}","${j.dropoffLocation || ''}","${t}","${j.passengers || ''}","${j.status || 'Available'}","${j.notes || ''}"\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'cape-town-jobs.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast('Export failed: ' + e, true);
+    }
+  };
+
+  btnRefreshAdmin.onclick = () => {
+    listenRequests();
+    showToast('Refreshed');
+  };
+
+  // Fallback Hide Loading
+  setTimeout(hideLoading, 2000);
+</script>
 
     setTimeout(() => document.getElementById('loading-overlay').style.display = 'none' || document.getElementById('app-container').classList.remove('hidden'), 12000);
   </script>
